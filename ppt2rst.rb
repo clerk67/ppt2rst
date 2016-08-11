@@ -1,8 +1,13 @@
-require "zip"
+#! /usr/bin/env ruby -Ku
+
 require "fileutils"
 require "rexml/document"
+require "zip"
 
+SLIDES_DIR = "ppt/slides"
+TEMP_DIR = ".ppt2rst_tmp/"
 TITLELINE_LENGTH = 80
+PROGRESSBAR_LENGTH = 63
 
 unless ARGV.size == 2
 	puts "ERROR: Invalid arguments"
@@ -14,21 +19,48 @@ unless File.exist?("#{ARGV[0]}")
 	exit
 end
 
-dest = "_ppt2md_tmp/"
+puts "Extracting input files..."
+
+FileUtils::mkdir_p(TEMP_DIR + SLIDES_DIR)
 Zip::File.open("#{ARGV[0]}") do |zip|
+	count = 0
 	zip.each do |entry|
-		dirname = File::dirname entry.to_s
-		if dirname == "ppt/slides"
-			FileUtils.mkdir_p(dest + dirname)
-			zip.extract(entry, dest + entry.to_s) {true}
+		dirname = File::dirname(entry.to_s)
+		if dirname == SLIDES_DIR
+			count += 1
 		end
+	end
+	i = 1
+	zip.each do |entry|
+		dirname = File::dirname(entry.to_s)
+		if dirname == SLIDES_DIR
+			printf("\r[%3d/%3d] |", i, count)
+			print "=" * (PROGRESSBAR_LENGTH * i / count) + " " * (PROGRESSBAR_LENGTH - (PROGRESSBAR_LENGTH * i / count))
+			printf("| %3d\%", 100 * i / count)
+			zip.extract(entry, TEMP_DIR + entry.to_s) {true}
+			i += 1
+		end
+	end
+end
+
+count = 0
+ls = Dir::entries(TEMP_DIR + SLIDES_DIR)
+ls.each do |line|
+	if line.match(/slide\d+\.xml/)
+		count += 1
 	end
 end
 
 i = 1
 rst = ""
-while File.exist?(dest + "ppt/slides/slide" + i.to_s + ".xml")
-	xml = REXML::Document.new(open(dest + "ppt/slides/slide" + i.to_s + ".xml"))
+puts "\nGenerating reStructuredText..."
+
+while File.exist?(TEMP_DIR + SLIDES_DIR + "/slide" + i.to_s + ".xml")
+	printf("\r[%3d/%3d] |", i, count)
+	print "=" * (PROGRESSBAR_LENGTH * i / count) + " " * (PROGRESSBAR_LENGTH - (PROGRESSBAR_LENGTH * i / count))
+	printf("| %3d\%", 100 * i / count)
+	xml = REXML::Document.new(open(TEMP_DIR + SLIDES_DIR + "/slide" + i.to_s + ".xml"))
+	rst << ".. slide #{i}/#{count}\n\n"
 	spTree = xml.elements["p:sld/p:cSld/p:spTree"]
 	spTree.elements.each do |element|
 		case element.name
@@ -40,11 +72,19 @@ while File.exist?(dest + "ppt/slides/slide" + i.to_s + ".xml")
 				case ph.attributes["type"]
 				when "title"
 					heading = 3
-				when "subtitle"
+				when "subTitle"
 					heading = 4
+				when "hdr"
+					heading = -1
+				when "ftr"
+					heading = -1
+				when "sldNum"
+					heading = -1
 				end
 			end
 			case heading
+			when -1
+				next
 			when 1
 				rst << "=" * TITLELINE_LENGTH + "\n"
 			when 3
@@ -59,7 +99,7 @@ while File.exist?(dest + "ppt/slides/slide" + i.to_s + ".xml")
 						bullet = ""
 					else
 						unless pPr.elements["a:buAutoNum"].nil?
-							bullet = "# "
+							bullet = "#. "
 						end
 						lvl = pPr.attributes["lvl"]
 						unless lvl.nil?
@@ -82,10 +122,21 @@ while File.exist?(dest + "ppt/slides/slide" + i.to_s + ".xml")
 						end
 					end
 					t = r.elements["a:t"]
-					unless t.nil?
+					unless t.nil? || t.text.to_s.empty?
+						text = t.text.to_s.gsub(/\*/, "\\*").gsub(/\#/, "\\#")
+						unless astah == 0 || rst[-1] == " "
+							rst << " "
+						end
 						rst << "*" * astah
-						rst << t.text.to_s.gsub(/\*/, "\\*").gsub(/\#/, "\\#")
+						if astah == 0
+							rst << text
+						else
+							rst << text.strip
+						end
 						rst << "*" * astah
+						unless astah == 0
+							rst << " "
+						end
 					end
 				end
 				if heading == 0
@@ -95,9 +146,9 @@ while File.exist?(dest + "ppt/slides/slide" + i.to_s + ".xml")
 			rst << "\n"
 			case heading
 			when 1, 2
-				rst << "=" * TITLELINE_LENGTH + "\n"
+				rst << "=" * TITLELINE_LENGTH + "\n\n"
 			when 3, 4
-				rst << "-" * TITLELINE_LENGTH + "\n"
+				rst << "-" * TITLELINE_LENGTH + "\n\n"
 			end
 		when "graphicFrame"
 			graphicFrame = element
@@ -122,8 +173,9 @@ while File.exist?(dest + "ppt/slides/slide" + i.to_s + ".xml")
 			end
 		end
 	end
-	i = i + 1
+	i += 1
 end
 
-File.write("#{ARGV[1]}", rst.gsub(/\*{4}/, ""))
+File.write("#{ARGV[1]}", rst)
+puts "\nSUCCESS: #{rst.count("\n")} lines were written to #{ARGV[1]}"
 
